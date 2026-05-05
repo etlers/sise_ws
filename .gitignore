@@ -8,6 +8,7 @@ __pycache__/
 .venv/
 venv/
 env/
+config/
 
 # Package/build outputs
 build/
