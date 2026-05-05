@@ -1,0 +1,7 @@
+data/
+graphify-out/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.git/

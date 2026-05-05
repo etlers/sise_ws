@@ -1,0 +1,6 @@
+key,label,source,day_change_pct,trend_5d_pct,risk_score,weight
+usdkrw,FX_USDKRW,naver,-0.0404,0.7539,-0.0606,0.45
+wti,CL=F,yahoo,0.0,0.0,-0.0,0.15
+brent,BZ=F,yahoo,0.0,0.0,-0.0,0.15
+sp500_futures,ES=F,yahoo,0.0,0.0,0.0,0.15
+nasdaq_futures,NQ=F,yahoo,0.0,0.0,0.0,0.1

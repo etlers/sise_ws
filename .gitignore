@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Package/build outputs
+build/
+dist/
+*.egg-info/
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local environment and secrets
+.env
+.env.*
+
+# Generated graphify output
+graphify-out/
+
+# Codex and editor noise
+.codex/
+.DS_Store
+.vscode/
+

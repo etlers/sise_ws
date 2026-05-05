@@ -1,0 +1,16 @@
+services:
+  sise-scheduler:
+    image: sise-scheduler:latest
+    container_name: sise-scheduler
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      SISE_SHARED_DATA_PATH: /shared_sise_data/data
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+      - ../sise_data/data:/shared_sise_data/data
+    restart: unless-stopped

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sise-ws"
+version = "0.1.0"
+description = "KIS websocket market data ingestor for KRX and NXT feeds"
+requires-python = ">=3.11"
+dependencies = [
+  "requests>=2.32.3",
+  "websockets>=13.0",
+  "pycryptodome>=3.20.0",
+  "beautifulsoup4>=4.13.4",
+]
+
+[project.scripts]
+sise-ws = "sise_ws.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
