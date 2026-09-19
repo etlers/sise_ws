@@ -8,9 +8,14 @@ services:
     env_file:
       - .env
     environment:
+      TZ: Asia/Seoul
       SISE_SHARED_DATA_PATH: /shared_sise_data/data
+      SISE_USB_BACKUP_PATH: /usb_sise_backup
+      SISE_HOLIDAY_CSV_PATH: /ekis_config/holiday.csv
     volumes:
       - ./config:/app/config
       - ./data:/app/data
       - ../sise_data/data:/shared_sise_data/data
+      - /Volumes/etlers_usb/backup/data_sise:/usb_sise_backup
+      - ../ekis/data/config/holiday.csv:/ekis_config/holiday.csv:ro
     restart: unless-stopped

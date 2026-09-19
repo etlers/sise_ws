@@ -196,15 +196,15 @@ docker compose up -d --build --force-recreate sise-scheduler
 ## 다른 컨테이너에서 데이터 참조
 
 이 프로젝트의 `data/` 디렉터리는 호스트 경로 `./data`를 컨테이너에 바인드 마운트해서 사용한다.
-당일 종가 파일 `preday_result.csv`는 별도의 공유 경로 `../sise_data/data`에서 읽어와 `./data/preday_result.csv`로 갱신한다.
+당일 종가 파일 `preday_result.csv`는 장마감 후 백업 시점에만 `./data/preday_result.csv`로 갱신한다.
 
 다른 컨테이너에서 `data/krx`와 `data/nxt`를 참조하려면 다음 조건이 필요하다.
 
 - 같은 호스트의 `./data` 경로를 마운트해야 한다.
-- `preday_result.csv`까지 같이 읽으려면 `../sise_data/data`도 읽기 전용으로 마운트해야 한다.
+- 공유 데이터 경로는 다른 컨테이너에서 참조용으로만 사용할 수 있다.
 - 읽기 전용으로만 사용할 경우 `:ro` 옵션을 붙이는 편이 안전하다.
 - 수집 중인 활성 CSV는 계속 append 되므로, 실시간 참조보다는 `backup/YYYY-MM-DD/` 아래의 백업 파일을 읽는 쪽이 더 안정적이다.
-- 당일 종가 파일 `preday_result.csv`는 `data/` 루트에 저장되며, 다른 컨테이너는 같은 공유 볼륨을 마운트해서 읽을 수 있다.
+- 당일 종가 파일 `preday_result.csv`는 `data/` 루트에 저장되며, 다른 컨테이너가 참조하려면 별도의 읽기 전용 마운트를 구성해야 한다.
 
 예시:
 

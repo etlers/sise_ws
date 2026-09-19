@@ -19,12 +19,40 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # 실제 실행 로직
 from .ingest import bootstrap, run
 
 # 스케줄러 실행 로직
 from .scheduler import run_scheduler
+
+
+SEOUL_TZ = ZoneInfo("Asia/Seoul")
+
+
+class KSTFormatter(logging.Formatter):
+    """로그 asctime을 항상 Asia/Seoul(KST)로 출력합니다."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=SEOUL_TZ)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _configure_logging() -> None:
+    """애플리케이션 전역 로깅을 KST 기준으로 설정합니다."""
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        KSTFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,12 +113,9 @@ def main() -> None:
     """
 
     # ---------------------------------------------------
-    # 로깅 기본 설정
+    # 로깅 기본 설정 (KST)
     # ---------------------------------------------------
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    _configure_logging()
 
     # ---------------------------------------------------
     # CLI 파서 생성 및 입력 파싱

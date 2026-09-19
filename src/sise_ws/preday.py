@@ -24,7 +24,7 @@ from pathlib import Path
 import csv
 import logging
 import os
-import shutil
+import re
 
 import requests
 from bs4 import BeautifulSoup
@@ -135,32 +135,6 @@ def preday_path(root: Path | None = None) -> Path:
     return base_dir / PREDAY_FILENAME
 
 
-def shared_preday_source_path() -> Path | None:
-    """
-    공유 데이터 루트에 이미 만들어진 preday_result.csv가 있으면 그 경로를 반환합니다.
-
-    공유 파일은 여러 실행 환경 또는 여러 인스턴스가 같은 기준 종가 파일을 재사용하기 위한 용도입니다.
-    로컬에 CSV가 없거나 새로 크롤링할 종목 수를 줄이고 싶을 때, 공유 파일을 먼저 복사해서 사용할 수 있습니다.
-
-    반환값:
-    - Path : 공유 preday_result.csv가 존재하는 경우
-    - None : 공유 루트가 없거나 파일이 없는 경우
-    """
-    # 설정에서 공유 데이터 루트를 가져옵니다.
-    # 공유 루트가 설정되어 있지 않으면 공유 파일을 사용할 수 없습니다.
-    shared_root = get_shared_data_root()
-    if shared_root is None:
-        return None
-
-    # 공유 루트 아래에 preday_result.csv가 있는지 확인합니다.
-    candidate = shared_root / PREDAY_FILENAME
-    if candidate.exists():
-        return candidate
-
-    # 공유 루트는 있지만 파일이 아직 만들어지지 않은 경우입니다.
-    return None
-
-
 def shared_preday_target_path() -> Path | None:
     """
     공유 preday_result.csv를 저장 대상으로 사용할 수 있는 경로를 반환합니다.
@@ -175,36 +149,6 @@ def shared_preday_target_path() -> Path | None:
     if shared_root is None:
         return None
     return shared_root / PREDAY_FILENAME
-
-
-def copy_shared_preday_source(target: Path | None = None) -> Path | None:
-    """
-    공유 preday_result.csv가 있으면 로컬 대상 경로로 복사합니다.
-
-    이 함수는 본격적인 크롤링 전에 호출하는 초기화 성격의 함수입니다.
-    공유 CSV를 먼저 복사해두면 이미 수집된 종목 데이터를 재사용할 수 있어서
-    네이버 요청 횟수를 줄이고, 로컬 CSV가 비어 있는 상황에서도 일부 기준 데이터를 확보할 수 있습니다.
-
-    반환값:
-    - Path : 복사된 대상 파일 경로
-    - None : 공유 원본 파일이 없어서 복사하지 않은 경우
-    """
-    # 공유 원본 파일이 실제로 존재하는지 확인합니다.
-    source = shared_preday_source_path()
-    if source is None:
-        return None
-
-    # 명시적인 target이 있으면 그 위치로 복사하고,
-    # 없으면 기본 preday_result.csv 경로로 복사합니다.
-    destination = target or preday_path()
-
-    # 대상 파일의 상위 디렉터리가 없으면 생성합니다.
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
-    # 메타데이터까지 가능한 보존하면서 파일을 복사합니다.
-    shutil.copy2(source, destination)
-    logger.info("copied shared preday file from %s to %s", source, destination)
-    return destination
 
 
 def _http_headers() -> dict[str, str]:
@@ -231,6 +175,23 @@ def _daily_price_headers(stock_code: str) -> dict[str, str]:
     headers["Referer"] = f"https://finance.naver.com/item/sise.naver?code={stock_code}"
     headers["Accept-Language"] = "ko-KR,ko;q=0.9,en;q=0.8"
     return headers
+
+
+def _parse_close_text(raw_text: str) -> int | None:
+    """
+    종가 셀에서 첫 번째 숫자 토큰만 추출해 정수로 반환합니다.
+
+    일부 HTML 응답은 동일한 숫자가 두 번 붙어서 들어올 수 있으므로,
+    셀 전체를 바로 int 변환하지 않고 첫 숫자 덩어리만 사용합니다.
+    """
+    match = re.search(r"\d[\d,]*", raw_text)
+    if match is None:
+        return None
+
+    try:
+        return int(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
 
 
 def _fetch_daily_close(stock_code: str, preferred_date: str | None = None) -> dict[str, object] | None:
@@ -268,20 +229,14 @@ def _fetch_daily_close(stock_code: str, preferred_date: str | None = None) -> di
             continue
 
         date_text = cells[0].get_text(strip=True).replace(".", "").replace("/", "")
-        close_text = cells[1].get_text(strip=True).replace(",", "")
+        close_value = _parse_close_text(cells[1].get_text(" ", strip=True))
 
         # 날짜 또는 종가가 비어 있으면 유효한 시세 행이 아닙니다.
-        if not date_text or not close_text:
+        if not date_text or close_value is None:
             continue
 
         # 날짜는 YYYYMMDD 형식만 허용합니다.
         if len(date_text) != 8 or not date_text.isdigit():
-            continue
-
-        try:
-            close_value = int(close_text)
-        except ValueError:
-            # 종가가 숫자가 아니면 광고/빈 행/형식 변경 가능성이 있으므로 건너뜁니다.
             continue
 
         rows.append({
@@ -349,16 +304,11 @@ def _fetch_naver_daily_price(stock_code: str, preferred_date: str | None = None)
                 continue
 
             date_text = cells[0].get_text(strip=True).replace(".", "").replace("/", "")
-            close_text = cells[1].get_text(strip=True).replace(",", "")
+            close_value = _parse_close_text(cells[1].get_text(" ", strip=True))
 
-            if not date_text or not close_text:
+            if not date_text or close_value is None:
                 continue
             if len(date_text) != 8 or not date_text.isdigit():
-                continue
-
-            try:
-                close_value = int(close_text)
-            except ValueError:
                 continue
 
             rows.append({
@@ -545,6 +495,7 @@ def _write_rows_to_targets(targets: list[Path], rows: list[dict[str, object]]) -
 def collect_and_save_today_close_result(
     stock_items: list[StockItem],
     trade_date: date,
+    archive_at: datetime,
     target: Path | None = None,
 ) -> dict[str, object]:
     """
@@ -561,7 +512,27 @@ def collect_and_save_today_close_result(
     - 기존 로컬/공유 CSV를 먼저 읽어 병합합니다.
     - 새로 수집한 행은 (종목코드, 날짜) 키 기준으로 기존 값을 덮어씁니다.
     - 수집 중 실패가 하나라도 있으면 저장하지 않고 오류를 올립니다.
+
+    안전 장치:
+    - `archive_at` 이전에는 어떤 경우에도 `preday_result.csv`를 저장하지 않습니다.
+    - 즉, 장마감 후 백업 시각에만 이 파일을 갱신할 수 있습니다.
     """
+    if archive_at.tzinfo is None:
+        raise ValueError("archive_at must be timezone-aware")
+
+    now = datetime.now(archive_at.tzinfo)
+    if now < archive_at:
+        raise RuntimeError(
+            "preday_result.csv can only be updated after archive_at "
+            f"now={now.isoformat()} archive_at={archive_at.isoformat()}"
+        )
+
+    if trade_date != archive_at.date():
+        raise RuntimeError(
+            "trade_date must match archive_at date "
+            f"trade_date={trade_date.isoformat()} archive_at={archive_at.isoformat()}"
+        )
+
     # 기본 저장 대상입니다.
     # target이 주어지면 그 위치에 저장하고, 없으면 기본 preday_result.csv 경로에 저장합니다.
     primary_target = target or preday_path()

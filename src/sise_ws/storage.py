@@ -3,11 +3,10 @@ from __future__ import annotations
 # dataclass: 데이터 저장용 클래스를 간결하게 만들기 위해 사용합니다.
 from dataclasses import dataclass
 
-# date/datetime/timedelta:
+# date/datetime:
 # - 현재 시각 기록
-# - 백업 날짜 계산
-# - 오래된 백업 삭제 기준 계산에 사용합니다.
-from datetime import date, datetime, timedelta
+# - 백업 날짜 계산에 사용합니다.
+from datetime import date, datetime
 
 # Path: 파일/디렉터리 경로를 객체 형태로 다루기 위해 사용합니다.
 from pathlib import Path
@@ -611,29 +610,35 @@ class CsvStore:
 def archive_csv_files(
     root_dir: Path,
     archive_date: date | None = None,
-    keep_days: int = 20,
+    keep_days: int = 5,
+    remote_backup_root: Path | None = None,
 ) -> list[Path]:
     """
     root_dir에 있는 CSV 파일들을 날짜별 backup 디렉터리로 이동합니다.
 
-    백업 경로:
+    로컬 백업 경로:
         root_dir / "backup" / YYYY-MM-DD
+
+    remote_backup_root가 있으면 같은 날짜 폴더를 USB 등 원격 경로에도 복사합니다.
+        remote_backup_root / YYYY-MM-DD
 
     백업 파일명:
         기존파일명_YYYYMMDD.csv
 
     예:
-        data/005930.csv
-        → data/backup/2026-04-29/005930_20260429.csv
+        data/krx/005930.csv
+        → data/krx/backup/2026-04-29/005930_20260429.csv
+        → (USB) .../krx/2026-04-29/005930_20260429.csv
 
-    keep_days 기준보다 오래된 백업 디렉터리는 삭제합니다.
+    로컬은 keep_days개의 최근 날짜 폴더만 남기고,
+    원격(USB)은 장기 보관용으로 prune 하지 않습니다.
     """
 
     # archive_date가 지정되어 있으면 해당 날짜를 사용하고,
     # 없으면 오늘 날짜를 사용합니다.
     target_date = archive_date or datetime.now().date()
 
-    # 날짜별 백업 디렉터리를 생성합니다.
+    # 날짜별 로컬 백업 디렉터리를 생성합니다.
     backup_root = root_dir / "backup" / target_date.isoformat()
     backup_root.mkdir(parents=True, exist_ok=True)
 
@@ -657,15 +662,58 @@ def archive_csv_files(
         # 이동된 백업 파일 경로를 결과 목록에 추가합니다.
         moved.append(destination)
 
-    # 오래된 백업 디렉터리를 정리합니다.
+    # USB 등 원격 백업 경로가 있으면 당일 폴더를 그대로 복사합니다.
+    if remote_backup_root is not None and moved:
+        _mirror_day_backup(backup_root, remote_backup_root, target_date)
+
+    # 로컬 오래된 백업 디렉터리를 정리합니다. (최근 keep_days개만 유지)
     _prune_old_backups(root_dir / "backup", keep_days=keep_days)
 
     return moved
 
 
+def purge_csv_files(root_dir: Path) -> int:
+    """
+    root_dir의 당일 CSV와 로컬 backup 폴더를 모두 삭제합니다.
+
+    NXT처럼 로컬 보관이 필요 없는 시장 데이터를
+    백업 스케줄 시점에 비울 때 사용합니다.
+
+    반환:
+        삭제한 CSV 파일 수
+    """
+
+    deleted = 0
+
+    for item in root_dir.glob("*.csv"):
+        item.unlink(missing_ok=True)
+        deleted += 1
+
+    backup_root = root_dir / "backup"
+    if backup_root.exists():
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+    return deleted
+
+
+def _mirror_day_backup(local_day_dir: Path, remote_backup_root: Path, day: date) -> None:
+    """로컬 날짜 백업 폴더를 원격(USB) 경로로 복사합니다."""
+
+    remote_day_dir = remote_backup_root / day.isoformat()
+    remote_day_dir.mkdir(parents=True, exist_ok=True)
+
+    for item in local_day_dir.iterdir():
+        if not item.is_file():
+            continue
+        destination = remote_day_dir / item.name
+        if destination.exists():
+            destination.unlink()
+        shutil.copy2(item, destination)
+
+
 def _prune_old_backups(backup_root: Path, keep_days: int) -> None:
     """
-    keep_days 기준보다 오래된 백업 디렉터리를 삭제합니다.
+    최근 keep_days개의 날짜 백업 폴더만 남기고 나머지는 삭제합니다.
 
     백업 디렉터리 구조는 다음과 같다고 가정합니다.
 
@@ -674,20 +722,15 @@ def _prune_old_backups(backup_root: Path, keep_days: int) -> None:
             2026-04-28/
             2026-04-01/
 
-    keep_days=20이면 최근 20일치만 남기고,
-    그보다 오래된 날짜 디렉터리는 삭제합니다.
+    keep_days=5이면 날짜명 기준 최신 5개 폴더만 남깁니다.
+    (장 마감 후 오늘 폴더가 생기면, 오늘 포함 최근 5일치가 됩니다.)
     """
 
     # keep_days가 0 이하이면 백업 보관 기능을 사용하지 않는 것으로 보고 종료합니다.
     if keep_days <= 0 or not backup_root.exists():
         return
 
-    # 보관 기준 날짜를 계산합니다.
-    #
-    # keep_days=20이면
-    # 오늘을 포함해서 최근 20일치를 남겨야 하므로
-    # cutoff = 오늘 - 19일 입니다.
-    cutoff = datetime.now().date() - timedelta(days=keep_days - 1)
+    dated_dirs: list[tuple[date, Path]] = []
 
     # backup_root 아래의 항목들을 순회합니다.
     for child in backup_root.iterdir():
@@ -698,11 +741,13 @@ def _prune_old_backups(backup_root: Path, keep_days: int) -> None:
         try:
             # 디렉터리명이 YYYY-MM-DD 형식이라고 가정하고 날짜로 변환합니다.
             child_date = date.fromisoformat(child.name)
-
         except ValueError:
             # 날짜 형식이 아닌 디렉터리는 삭제 대상에서 제외합니다.
             continue
 
-        # cutoff보다 오래된 백업 디렉터리는 삭제합니다.
-        if child_date < cutoff:
-            shutil.rmtree(child, ignore_errors=True)
+        dated_dirs.append((child_date, child))
+
+    # 최신 날짜가 앞에 오도록 정렬한 뒤, keep_days개를 초과하는 오래된 폴더를 삭제합니다.
+    dated_dirs.sort(key=lambda item: item[0], reverse=True)
+    for _, child in dated_dirs[keep_days:]:
+        shutil.rmtree(child, ignore_errors=True)

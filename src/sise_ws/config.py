@@ -39,6 +39,12 @@ DATA_DIR = ROOT_DIR / "data"
 # 공유 데이터 기본 경로 (도커/외부 시스템 연동용)
 DEFAULT_SHARED_DATA_PATH = "/shared_sise_data/data"
 
+# USB 장기 백업 기본 경로 (컨테이너 마운트 기준)
+DEFAULT_USB_BACKUP_PATH = "/usb_sise_backup"
+
+# ekis 공유 휴장일 CSV (컨테이너 마운트 기준)
+DEFAULT_HOLIDAY_CSV_PATH = "/ekis_config/holiday.csv"
+
 # ---------------------------------------------------
 # [API / WebSocket 기본 URL]
 # ---------------------------------------------------
@@ -264,6 +270,58 @@ def get_shared_data_root() -> Path | None:
         return host_default
 
     return None
+
+
+def get_usb_backup_root() -> Path | None:
+    """
+    USB 장기 백업 루트 경로 찾기
+
+    우선순위:
+    1. 환경 변수 (SISE_USB_BACKUP_PATH)
+    2. 컨테이너 기본 마운트 (/usb_sise_backup)
+    3. 호스트 기본 경로 (/Volumes/etlers_usb/backup/data_sise)
+
+    반환:
+        Path 또는 None
+    """
+
+    usb_backup_path = _env("SISE_USB_BACKUP_PATH", default=DEFAULT_USB_BACKUP_PATH)
+
+    if usb_backup_path:
+        candidate = Path(usb_backup_path).expanduser()
+        if candidate.exists():
+            return candidate
+
+    host_default = Path("/Volumes/etlers_usb/backup/data_sise")
+    if host_default.exists():
+        return host_default
+
+    return None
+
+
+def get_holiday_csv_path() -> Path:
+    """
+    휴장일 CSV 경로 찾기
+
+    우선순위:
+    1. 환경 변수 (SISE_HOLIDAY_CSV_PATH)
+    2. 컨테이너 기본 마운트 (/ekis_config/holiday.csv)
+    3. 호스트 ekis 경로 (../ekis/data/config/holiday.csv)
+    4. 로컬 config/holiday.csv (fallback)
+    """
+
+    holiday_csv_path = _env("SISE_HOLIDAY_CSV_PATH", default=DEFAULT_HOLIDAY_CSV_PATH)
+
+    if holiday_csv_path:
+        candidate = Path(holiday_csv_path).expanduser()
+        if candidate.exists():
+            return candidate
+
+    ekis_default = ROOT_DIR.parent / "ekis" / "data" / "config" / "holiday.csv"
+    if ekis_default.exists():
+        return ekis_default
+
+    return CONFIG_DIR / "holiday.csv"
 
 
 # ---------------------------------------------------

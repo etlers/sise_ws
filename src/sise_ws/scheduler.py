@@ -13,18 +13,21 @@ import signal
 import time as time_module
 
 # 프로젝트 공통 설정 경로, 데이터 저장 경로, 종목 리스트 로딩 함수입니다.
-from .config import CONFIG_DIR, DATA_DIR, load_stock_list
-# 승인키 갱신 함수와 실제 시세 수집을 1회 수행하는 함수입니다.
+from .config import CONFIG_DIR, DATA_DIR, get_holiday_csv_path, get_usb_backup_root, load_stock_list
+# 승인키 갱신 함수입니다.
 from .ingest import refresh_approval_key, run_once
 # 장마감 후 당일 종가 파일만 갱신하는 함수입니다.
 from .preday import collect_and_save_today_close_result
 # 수집된 CSV 파일을 날짜 기준으로 보관/정리하는 함수입니다.
-from .storage import archive_csv_files
+from .storage import archive_csv_files, purge_csv_files
 
 
 # 이 모듈 전용 로거입니다.
 # 실제 출력 여부와 포맷은 애플리케이션의 logging 설정에 따릅니다.
 logger = logging.getLogger(__name__)
+
+# 로컬 서버에는 최근 백업 날짜 폴더만 남깁니다. (장 마감 후 오늘 포함)
+LOCAL_BACKUP_KEEP_DAYS = 5
 
 
 # 모든 스케줄 판단은 한국 주식시장 기준이므로 UTC+9, 즉 서울 시간대로 고정합니다.
@@ -89,9 +92,12 @@ def load_deal_window(path: Path | None = None) -> DealWindow:
 def load_holiday_dates(path: Path | None = None) -> set[date]:
     """holiday.csv에서 휴장일 목록을 읽어 date 집합으로 반환합니다."""
 
-    # path가 별도로 주어지면 해당 파일을 사용하고, 없으면 기본 휴장일 CSV를 사용합니다.
-    target = path or (CONFIG_DIR / "holiday.csv")
+    # path가 별도로 주어지면 해당 파일을 사용하고,
+    # 없으면 ekis 공유 holiday.csv(없으면 로컬 fallback)를 사용합니다.
+    target = path or get_holiday_csv_path()
     holidays: set[date] = set()
+
+    logger.info("loading holidays from %s", target)
 
     # utf-8-sig를 사용해 BOM이 포함된 CSV도 안전하게 읽습니다.
     with target.open("r", encoding="utf-8-sig", newline="") as fp:
@@ -214,32 +220,47 @@ def _log_day_schedule(day: date, holidays: set[date], window: DealWindow) -> Non
     logger.info("    * 종료: %s", nxt_end.strftime("%H:%M"))
     logger.info("  - %s 정규장 시세 추출 시작 (krx)", krx_start.strftime("%H:%M"))
     logger.info("    * 종료: %s", krx_end.strftime("%H:%M"))
-    logger.info("  - %s 백업 시작 (nxt, krx)", archive_at.strftime("%H:%M"))
+    logger.info("  - %s 백업 시작 (krx 보관 / nxt 삭제)", archive_at.strftime("%H:%M"))
 
 
 def _archive_market_data(day: date) -> dict[str, int]:
-    """KRX/NXT CSV 파일을 백업하고, 백업된 파일 개수를 반환합니다."""
+    """KRX는 로컬+USB 백업, NXT는 로컬에서 삭제만 수행합니다."""
 
-    # 정규장 데이터 폴더를 대상으로 archive_date 기준 백업을 수행합니다.
-    # keep_days=20이므로 보관 정책은 최근 20일 기준으로 관리됩니다.
-    archived_krx = archive_csv_files(DATA_DIR / "krx", archive_date=day, keep_days=20)
+    usb_root = get_usb_backup_root()
+    if usb_root is None:
+        logger.warning(
+            "USB backup path unavailable; archiving krx to local only (keep_days=%s)",
+            LOCAL_BACKUP_KEEP_DAYS,
+        )
+    else:
+        logger.info("USB backup root=%s local_keep_days=%s", usb_root, LOCAL_BACKUP_KEEP_DAYS)
 
-    # NXT 데이터 폴더도 동일한 기준으로 백업합니다.
-    archived_nxt = archive_csv_files(DATA_DIR / "nxt", archive_date=day, keep_days=20)
+    # 정규장 데이터: 로컬 backup 이동 + USB 복사 + 로컬 최근 5일 prune
+    archived_krx = archive_csv_files(
+        DATA_DIR / "krx",
+        archive_date=day,
+        keep_days=LOCAL_BACKUP_KEEP_DAYS,
+        remote_backup_root=(usb_root / "krx") if usb_root is not None else None,
+    )
+
+    # NXT는 로컬 보관이 필요 없으므로 당일 CSV와 backup 폴더를 삭제합니다.
+    deleted_nxt = purge_csv_files(DATA_DIR / "nxt")
 
     # 백업 결과를 로그로 남깁니다.
     logger.info(
-        "archived files for %s (krx=%s, nxt=%s)",
+        "archived files for %s (krx=%s, nxt_deleted=%s, usb=%s)",
         day.isoformat(),
         len(archived_krx),
-        len(archived_nxt),
+        deleted_nxt,
+        bool(usb_root),
     )
 
     # 후속 로그에서 쓰기 쉽도록 시장별/전체 백업 파일 수를 dict로 반환합니다.
     return {
         "krx": len(archived_krx),
-        "nxt": len(archived_nxt),
-        "total": len(archived_krx) + len(archived_nxt),
+        "nxt": deleted_nxt,
+        "total": len(archived_krx),
+        "usb": 1 if usb_root is not None else 0,
     }
 
 
@@ -280,6 +301,46 @@ def _log_stage_files(stage: str, report: dict[str, object]) -> None:
         last_time = str(item.get("last_time") or "")
         rows = int(item.get("rows") or 0)
         logger.info("  - %s first=%s last=%s rows=%s", filename, first_time, last_time, rows)
+
+
+def _run_ingest_until_deadline(
+    *,
+    session_name: str,
+    deadline: datetime,
+    stage_label: str,
+) -> dict[str, object]:
+    """지정된 시각까지 웹소켓 수집을 반복 재시도합니다."""
+
+    # websocket 연결이 중간에 종료되면 run_once()가 끝나버릴 수 있습니다.
+    # 이 경우에도 시장 종료 시각까지는 다시 실행해서 수집을 이어가야 하므로,
+    # deadline 전까지 run_once()를 반복 호출합니다.
+    attempt = 0
+    latest_report: dict[str, object] = {}
+
+    while datetime.now(SEOUL_TZ) < deadline:
+        attempt += 1
+        report = run_once(
+            refresh_approval=False,
+            stop_at=deadline,
+            session_name=session_name,
+        )
+        latest_report = report
+
+        # 정상적으로 deadline까지 도달했다면 이 세션은 끝난 것입니다.
+        if datetime.now(SEOUL_TZ) >= deadline:
+            return latest_report
+
+        # run_once()가 deadline 전에 끝났다면 websocket 세션이 끊겼거나
+        # 예상보다 일찍 종료된 것이므로 다시 시작합니다.
+        logger.warning(
+            "%s ingest ended early; restarting until %s (attempt %s)",
+            stage_label,
+            deadline.isoformat(),
+            attempt + 1,
+        )
+        time_module.sleep(3)
+
+    return latest_report
 
 
 def run_scheduler() -> None:
@@ -390,7 +451,11 @@ def run_scheduler() -> None:
             )
             try:
                 # 승인키는 앞 단계에서 이미 갱신했으므로 refresh_approval=False로 실행합니다.
-                report = run_once(refresh_approval=False, stop_at=nxt_end, session_name="nxt")
+                report = _run_ingest_until_deadline(
+                    session_name="nxt",
+                    deadline=nxt_end,
+                    stage_label="nxt",
+                )
 
                 # 수집된 파일별 요약과 전체 처리 결과를 로그로 남깁니다.
                 _log_stage_files("프리마켓", report)
@@ -436,7 +501,11 @@ def run_scheduler() -> None:
             )
             try:
                 # 정규장 수집도 승인키 재갱신 없이 현재 승인키를 사용합니다.
-                report = run_once(refresh_approval=False, stop_at=krx_end, session_name="krx")
+                report = _run_ingest_until_deadline(
+                    session_name="krx",
+                    deadline=krx_end,
+                    stage_label="krx",
+                )
 
                 # 정규장 수집 결과는 체결 데이터와 호가 데이터 행 수를 함께 기록합니다.
                 _log_stage_files("정규장", report)
@@ -481,6 +550,7 @@ def run_scheduler() -> None:
         preday_report = collect_and_save_today_close_result(
             stock_items,
             today,
+            archive_at,
             DATA_DIR / "preday_result.csv",
         )
 
@@ -500,7 +570,7 @@ def run_scheduler() -> None:
             "백업",
             today,
             datetime.now(SEOUL_TZ),
-            f"archived_files={archived.get('total', 0)} krx={archived.get('krx', 0)} nxt={archived.get('nxt', 0)} keep_days=20",
+            f"archived_files={archived.get('total', 0)} krx={archived.get('krx', 0)} nxt_deleted={archived.get('nxt', 0)} keep_days={LOCAL_BACKUP_KEEP_DAYS} usb={archived.get('usb', 0)}",
         )
 
         # 하루치 작업이 모두 끝났으므로 다음 날 00:00까지 대기합니다.
